@@ -91,9 +91,9 @@ def _tokenize(
 
         prompt_len_input_ids = _adjust_prompt_length(prompt_tokens, chosen_tokens, rejected_tokens)
 
-        prompt_tokens, chosen_tokens, rejected_tokens = _add_special_tokens(
-            tokenizer, prompt_len_input_ids, prompt_tokens, chosen_tokens, rejected_tokens
-        )
+        # prompt_tokens, chosen_tokens, rejected_tokens = _add_special_tokens(
+        #     tokenizer, prompt_len_input_ids, prompt_tokens, chosen_tokens, rejected_tokens
+        # )
 
         _truncate_tokens(tokenizer, chosen_tokens, rejected_tokens, prompt_tokens, args)
 
@@ -195,7 +195,6 @@ def _add_special_tokens(
 
 
 def _truncate_tokens(
-    tokenizer: PreTrainedTokenizerBase,
     chosen_tokens: List[Dict[str, List[int]]],
     rejected_tokens: List[Dict[str, List[int]]],
     prompt_tokens: List[Dict[str, List[int]]],
@@ -218,21 +217,23 @@ def _truncate_tokens(
                         answer_tokens[k] = answer_tokens[k][: args.max_prompt_length]
                 elif args.truncation_mode == "keep_end":
                     for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                        answer_tokens[k] = answer_tokens[k][-args.max_prompt_length + 1 :]
-                        if k == "prompt_input_ids":
-                            answer_tokens[k] = [tokenizer.bos_token_id] + answer_tokens[k]
-                        elif k == "prompt_attention_mask":
-                            answer_tokens[k] = [1] + answer_tokens[k]
+                        answer_tokens[k] = answer_tokens[k][-args.max_prompt_length :]
+                        # answer_tokens[k] = answer_tokens[k][-args.max_prompt_length + 1 :]
+                        # if k == "prompt_input_ids":
+                        #     answer_tokens[k] = [self.tokenizer.bos_token_id] + answer_tokens[k]
+                        # elif k == "prompt_attention_mask":
+                        #     answer_tokens[k] = [1] + answer_tokens[k]
 
         # if that's still too long, truncate the response from the end
         for answer_tokens in [c_tokens, r_tokens]:
             if len(answer_tokens["prompt_input_ids"]) + longer_response_length > args.max_length:
                 for k in ["input_ids", "attention_mask"]:
-                    answer_tokens[k] = answer_tokens[k][: args.max_length - len(answer_tokens["prompt_input_ids"]) - 1]
-                    if k == "input_ids":
-                        answer_tokens[k].append(tokenizer.eos_token_id)
-                    elif k == "attention_mask":
-                        answer_tokens[k].append(1)
+                    answer_tokens[k] = answer_tokens[k][: args.max_length - len(answer_tokens["prompt_input_ids"])]
+                    # answer_tokens[k] = answer_tokens[k][: args.max_length - len(answer_tokens["prompt_input_ids"]) - 1]
+                    # if k == "input_ids":
+                    #     answer_tokens[k].append(self.tokenizer.eos_token_id)
+                    # elif k == "attention_mask":
+                    #     answer_tokens[k].append(1)
 
 
 def _build_sequence_tokens(
