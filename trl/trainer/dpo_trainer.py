@@ -195,6 +195,7 @@ def _add_special_tokens(
 
 
 def _truncate_tokens(
+    tokenizer: PreTrainedTokenizerBase,
     chosen_tokens: List[Dict[str, List[int]]],
     rejected_tokens: List[Dict[str, List[int]]],
     prompt_tokens: List[Dict[str, List[int]]],
@@ -220,7 +221,7 @@ def _truncate_tokens(
                         answer_tokens[k] = answer_tokens[k][-args.max_prompt_length :]
                         # answer_tokens[k] = answer_tokens[k][-args.max_prompt_length + 1 :]
                         # if k == "prompt_input_ids":
-                        #     answer_tokens[k] = [self.tokenizer.bos_token_id] + answer_tokens[k]
+                        #     answer_tokens[k] = [tokenizer.bos_token_id] + answer_tokens[k]
                         # elif k == "prompt_attention_mask":
                         #     answer_tokens[k] = [1] + answer_tokens[k]
 
@@ -231,7 +232,7 @@ def _truncate_tokens(
                     answer_tokens[k] = answer_tokens[k][: args.max_length - len(answer_tokens["prompt_input_ids"])]
                     # answer_tokens[k] = answer_tokens[k][: args.max_length - len(answer_tokens["prompt_input_ids"]) - 1]
                     # if k == "input_ids":
-                    #     answer_tokens[k].append(self.tokenizer.eos_token_id)
+                    #     answer_tokens[k].append(tokenizer.eos_token_id)
                     # elif k == "attention_mask":
                     #     answer_tokens[k].append(1)
 
