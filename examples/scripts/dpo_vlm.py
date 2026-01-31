@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2020-2026 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# /// script
+# dependencies = [
+#     "trl",
+#     "peft",
+#     "Pillow>=9.4.0",
+#     "torchvision",
+#     "trackio",
+#     "kernels",
+# ]
+# ///
+
 """
 Without dataset streaming:
 
@@ -22,13 +33,10 @@ accelerate launch examples/scripts/dpo_vlm.py \
     --per_device_train_batch_size 2 \
     --gradient_accumulation_steps 32 \
     --dataset_num_proc 32 \
-    --output_dir dpo_idefics_rlaif-v \
-    --bf16 True \
-    --torch_dtype bfloat16 \
-    --gradient_checkpointing \
+    --output_dir dpo_qwen_2_5_rlaif-v \
+    --dtype bfloat16 \
     --use_peft \
-    --lora_target_modules=all-linear \
-    --report_to wandb
+    --lora_target_modules all-linear
 ```
 
 With dataset streaming:
@@ -42,19 +50,18 @@ accelerate launch examples/scripts/dpo_vlm.py \
     --max_steps 100 \
     --gradient_accumulation_steps 32 \
     --dataset_num_proc 32 \
-    --output_dir dpo_idefics_rlaif-v \
-    --bf16 True \
-    --torch_dtype bfloat16 \
-    --gradient_checkpointing \
+    --output_dir dpo_qwen_2_5_rlaif-v \
+    --dtype bfloat16 \
     --use_peft \
-    --lora_target_modules=all-linear \
-    --report_to wandb
+    --lora_target_modules all-linear
 ```
 """
 
+import os
+
 import torch
 from datasets import load_dataset
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from trl import (
     DPOConfig,
@@ -68,33 +75,37 @@ from trl import (
 )
 
 
+# Enable logging in a Hugging Face Space
+os.environ.setdefault("TRACKIO_SPACE_ID", "trl-trackio")
+
 if __name__ == "__main__":
     parser = TrlParser((ScriptArguments, DPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
 
     ################
-    # Model & Tokenizer
+    # Model & Processor
     ################
-    torch_dtype = (
-        model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
-    )
-    quantization_config = get_quantization_config(model_args)
+    dtype = model_args.dtype if model_args.dtype in ["auto", None] else getattr(torch, model_args.dtype)
 
     model_kwargs = dict(
         revision=model_args.model_revision,
         attn_implementation=model_args.attn_implementation,
-        torch_dtype=torch_dtype,
-        device_map=get_kbit_device_map() if quantization_config is not None else None,
-        quantization_config=quantization_config,
+        dtype=dtype,
     )
-    model = AutoModelForVision2Seq.from_pretrained(
+    quantization_config = get_quantization_config(model_args)
+    if quantization_config is not None:
+        # Passing None would not be treated the same as omitting the argument, so we include it only when valid.
+        model_kwargs["device_map"] = get_kbit_device_map()
+        model_kwargs["quantization_config"] = quantization_config
+
+    model = AutoModelForImageTextToText.from_pretrained(
         model_args.model_name_or_path,
         trust_remote_code=model_args.trust_remote_code,
         **model_kwargs,
     )
     peft_config = get_peft_config(model_args)
     if peft_config is None:
-        ref_model = AutoModelForVision2Seq.from_pretrained(
+        ref_model = AutoModelForImageTextToText.from_pretrained(
             model_args.model_name_or_path,
             trust_remote_code=model_args.trust_remote_code,
             **model_kwargs,
@@ -104,18 +115,7 @@ if __name__ == "__main__":
     processor = AutoProcessor.from_pretrained(
         model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code, do_image_splitting=False
     )
-    tokenizer = processor.tokenizer
 
-    # Set up the chat template
-    if model.config.model_type == "idefics2":
-        pass  # the processor already has a valid chat template
-    elif model.config.model_type == "paligemma":
-        processor.chat_template = """{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}<|im_start|>{% if message['role'] == 'user' %}USER: {% else %}ASSISTANT: {% endif %}{% for item in message['content'] if item['type'] == 'text' %}{{ item['text'] }}<|im_end|>{% endfor %}{% if message['role'] == 'user' %} {% else %}{{eos_token}}{% endif %}{% endfor %}{% if add_generation_prompt %}ASSISTANT: {% endif %}"""
-    elif model.config.model_type == "llava":
-        processor.chat_template = """{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'user' %}USER: {% else %}ASSISTANT: {% endif %}{% for item in message['content'] %}{% if item['type'] == 'text' %}{{ item['text'] }}{% elif item['type'] == 'image' %}<image>{% endif %}{% endfor %}{% if message['role'] == 'user' %} {% else %}{{eos_token}}{% endif %}{% endfor %}{% if add_generation_prompt %}ASSISTANT: {% endif %}"""
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
     if script_args.ignore_bias_buffers:
         # torch distributed hack
         model._ddp_params_and_buffers_to_ignore = [
@@ -140,7 +140,6 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=dataset[script_args.dataset_train_split],
         eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
-        processing_class=processor,
         peft_config=peft_config,
     )
 

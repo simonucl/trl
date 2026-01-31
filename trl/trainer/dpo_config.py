@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2020-2026 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,18 +14,45 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
+import transformers
+from packaging.version import Version
 from transformers import TrainingArguments
 
 
 class FDivergenceType(Enum):
+    """Types of f-divergence functions for DPO loss regularization.
+
+    Attributes:
+        REVERSE_KL: Reverse KL divergence.
+        JS_DIVERGENCE: Jensen-Shannon divergence.
+        ALPHA_DIVERGENCE: Alpha divergence.
+
+    Examples:
+        ```python
+        >>> from trl.trainer.dpo_config import DPOConfig, FDivergenceType
+
+        >>> config = DPOConfig(
+        ...     f_divergence_type=FDivergenceType.ALPHA_DIVERGENCE,
+        ...     f_alpha_divergence_coef=0.5,  # used only with ALPHA_DIVERGENCE
+        ... )
+        ```
+    """
+
     REVERSE_KL = "reverse_kl"
     JS_DIVERGENCE = "js_divergence"
     ALPHA_DIVERGENCE = "alpha_divergence"
 
 
 class FDivergenceConstants:
+    """Constants for f-divergence types and their parameters.
+
+    Attributes:
+        ALPHA_DIVERGENCE_COEF_KEY (`str`): Key for the alpha divergence coefficient.
+        ALPHA_DIVERGENCE_COEF_DEFAULT (`float`): Default value for the alpha divergence coefficient.
+    """
+
     ALPHA_DIVERGENCE_COEF_KEY = "alpha_divergence_coef"
     ALPHA_DIVERGENCE_COEF_DEFAULT = 1.0
 
@@ -46,15 +73,15 @@ class DPOConfig(TrainingArguments):
     Parameters:
         > Parameters that control the model and reference model
 
-        model_init_kwargs (`dict[str, Any]` or `None`, *optional*, defaults to `None`):
+        model_init_kwargs (`dict[str, Any]`, *optional*):
             Keyword arguments for `AutoModelForCausalLM.from_pretrained`, used when the `model` argument of the
             [`DPOTrainer`] is provided as a string.
-        ref_model_init_kwargs (`dict[str, Any]` or `None`, *optional*, defaults to `None`):
+        ref_model_init_kwargs (`dict[str, Any]`, *optional*):
             Keyword arguments for `AutoModelForCausalLM.from_pretrained`, used when the `ref_model` argument of the
             [`DPOTrainer`] is provided as a string.
-        model_adapter_name (`str` or `None`, *optional*, defaults to `None`):
+        model_adapter_name (`str`, *optional*):
             Name of the train target PEFT adapter, when using LoRA with multiple adapters.
-        ref_adapter_name (`str` or `None`, *optional*, defaults to `None`):
+        ref_adapter_name (`str`, *optional*):
             Name of the reference PEFT adapter, when using LoRA with multiple adapters.
         force_use_ref_model (`bool`, *optional*, defaults to `False`):
             If you provide a PEFT model as the active model and wish to use a different model for the `ref_model`, set
@@ -68,15 +95,16 @@ class DPOConfig(TrainingArguments):
 
         > Parameters that control the data preprocessing
 
-        dataset_num_proc (`int` or `None`, *optional*, defaults to `None`):
+        dataset_num_proc (`int`, *optional*):
             Number of processes to use for processing the dataset.
-        padding_value (`int` or `None`, *optional*, defaults to `None`):
-            Padding value to use. If `None`, the padding value of the tokenizer is used.
+        pad_token (`str`, *optional*):
+            Token used for padding. If `None`, it defaults to `processing_class.pad_token`, or if that is also `None`,
+            it falls back to `processing_class.eos_token`.
         label_pad_token_id (`int`, *optional*, defaults to `-100`):
             Padding value to use for labels.
         max_prompt_length (`int` or `None`, *optional*, defaults to `512`):
             Maximum length of the prompt.
-        max_completion_length (`int` or `None`, *optional*, defaults to `None`):
+        max_completion_length (`int`, *optional*):
             Maximum length of the completion.
         max_length (`int` or `None`, *optional*, defaults to `1024`):
             Maximum length of the full sequence (prompt + completion).
@@ -93,17 +121,17 @@ class DPOConfig(TrainingArguments):
             training without needing the reference model during training, which can help reduce GPU memory usage. If
             set to `False` (default), the reference model will be used during training to compute log probabilities
             on-the-fly.
-        precompute_ref_batch_size (`int` or `None`, *optional*, defaults to `None`):
+        precompute_ref_batch_size (`int`, *optional*):
             Batch size to use when precomputing reference model log probabilities. This can be set higher than the
             training batch size to speed up preprocessing. If `None`, defaults to `per_device_train_batch_size` for
             training and `per_device_eval_batch_size` for evaluation.
-        tools (`Optional[list[Union[dict, Callable]]]`, *optional*, defaults to `None`):
+        tools (`list[dict] | None`, *optional*):
             List of tools (callable functions) that will be accessible to the model. If the template does not support
             function calling, this argument will have no effect.
 
         > Parameters that control the training
 
-        loss_type (`str`, *optional*, defaults to `"sigmoid"`):
+        loss_type (`str` or `list[str]`, *optional*, defaults to `"sigmoid"`):
             Type of loss to use. Possible values are:
 
                 - `"sigmoid"`: sigmoid loss from the original [DPO](https://huggingface.co/papers/2305.18290) paper.
@@ -124,17 +152,20 @@ class DPOConfig(TrainingArguments):
                   [DiscoPOP](https://huggingface.co/papers/2406.08414) paper.
                 - `"apo_zero"`: APO-zero loss from the [APO](https://huggingface.co/papers/2408.06266) paper.
                 - `"apo_down"`: APO-down loss from the [APO](https://huggingface.co/papers/2408.06266) paper.
+                - `"sft"`: Negative log-likelihood loss (standard supervised fine-tuning loss).
 
-        use_liger_loss (`bool`, *optional*, defaults to `False`):
-            Whether to use Liger loss.
+            Multiple loss types can be combined using comma separation (e.g., `["sigmoid", "bco_pair", "sft"]` for
+            [MPO](https://huggingface.co/papers/2411.10442)). The `loss_weights` parameter can be used to specify
+            corresponding weights for each loss type.
         base_model_attribute_name (`str`, *optional*, defaults to `"model"`):
             Name of the attribute in the model that contains the base model. This is used to get the base model from
-            the model when the model does not have a `get_decoder` method in the case when `use_liger_loss` is `True`.
+            the model when the model does not have a `get_decoder` method in the case when `use_liger_kernel` is
+            `True`.
         beta (`float`, *optional*, defaults to `0.1`):
             Parameter controlling the deviation from the reference model. Higher β means less deviation from the
             reference model. For the IPO loss (`loss_type="ipo"`), β is the regularization parameter denoted by τ in
             the [paper](https://huggingface.co/papers/2310.12036).
-        f_divergence_type (`str`, *optional*, defaults to `FDivergenceType.REVERSE_KL`):
+        f_divergence_type ([`FDivergenceType`] or `str`, *optional*, defaults to `FDivergenceType.REVERSE_KL`):
             Type of f-divergence regularization function to compute divergence between policy and reference model.
         f_alpha_divergence_coef (`float`, *optional*, defaults to `1.0`):
             α coefficient in the α-divergence u^-α regularization function for DPO loss.
@@ -146,11 +177,11 @@ class DPOConfig(TrainingArguments):
             DPO](https://huggingface.co/papers/2403.00409) paper that should be between `0.0` and `0.5`.
         use_weighting (`bool`, *optional*, defaults to `False`):
             Whether to weight the loss as done in the [WPO paper](https://huggingface.co/papers/2406.11827).
-        rpo_alpha (`float`, *optional*, defaults to `None`):
+        rpo_alpha (`float`, *optional*):
             α parameter from the [RPO paper](https://huggingface.co/papers/2404.19733) (v3), which controls the
             weighting of the NLL term in the loss. If `None`, no weighting is applied and the loss is the same as the
             DPO loss. The paper recommends `rpo_alpha=1.0`.
-        ld_alpha (`float` or `None`, *optional*, defaults to `None`):
+        ld_alpha (`float`, *optional*):
             α parameter from the [LD-DPO paper](https://huggingface.co/papers/2409.06411), which controls the weighting
             of the verbose token log-probabilities in responses. If `None`, no weighting is applied to the verbose
             part, and the loss is equivalent to the standard DPO loss. The paper recommends setting `ld_alpha` between
@@ -158,9 +189,13 @@ class DPOConfig(TrainingArguments):
         discopop_tau (`float`, *optional*, defaults to `0.05`):
             τ/temperature parameter from the [DiscoPOP](https://huggingface.co/papers/2406.08414) paper, which controls
             the shape of log ratio modulated loss. The paper recommends the default value `discopop_tau=0.05`.
+        loss_weights (`list[float]`, *optional*):
+            List of loss weights for multi-loss combinations. Used when combining multiple loss types. Example: `[0.8,
+            0.2, 1.0]` for [MPO](https://huggingface.co/papers/2411.10442). If not provided, defaults to equal weights
+            (`1.0`) for all loss types.
         sync_ref_model (`bool`, *optional*, defaults to `False`):
             Whether to synchronize the reference model with the active model every `ref_model_sync_steps` steps, using
-            the `ref_model_mixup_alpha` parameter. This synchronization originites from the
+            the `ref_model_mixup_alpha` parameter. This synchronization originates from the
             [TR-DPO](https://huggingface.co/papers/2404.09656) paper.
         ref_model_mixup_alpha (`float`, *optional*, defaults to `0.6`):
             α parameter from the [TR-DPO](https://huggingface.co/papers/2404.09656) paper, which controls the mix
@@ -193,7 +228,13 @@ class DPOConfig(TrainingArguments):
             "will be interpreted as ratio of total training steps."
         },
     )
-    bf16: Optional[bool] = field(
+    gradient_checkpointing: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, use gradient checkpointing to save memory at the expense of slower backward pass."
+        },
+    )
+    bf16: bool | None = field(
         default=None,
         metadata={
             "help": "Whether to use bf16 (mixed) precision instead of 32-bit. Requires Ampere or higher NVIDIA "
@@ -201,27 +242,37 @@ class DPOConfig(TrainingArguments):
             "`fp16` is not set."
         },
     )
+    # Transformers 4.57.0 introduced a bug that caused the dtype of `lr_scheduler_kwargs` to be unparsable. This issue
+    # was fixed in https://github.com/huggingface/transformers/pull/41322 and released in 4.57.5. We add a temporary
+    # workaround here, which can be removed once we drop support for versions older than 4.57.5.
+    lr_scheduler_kwargs: dict | str | None = field(
+        default=None,
+        metadata={
+            "help": "Additional parameters for the lr_scheduler, such as {'num_cycles': 1} for cosine with hard "
+            "restarts."
+        },
+    )
 
     # Parameters that control the model and reference model
-    model_init_kwargs: Optional[dict[str, Any]] = field(
+    model_init_kwargs: dict[str, Any] | None = field(
         default=None,
         metadata={
             "help": "Keyword arguments for `AutoModelForCausalLM.from_pretrained`, used when the `model` argument of "
             "the `DPOTrainer` is provided as a string."
         },
     )
-    ref_model_init_kwargs: Optional[dict[str, Any]] = field(
+    ref_model_init_kwargs: dict[str, Any] | None = field(
         default=None,
         metadata={
             "help": "Keyword arguments for `AutoModelForCausalLM.from_pretrained`, used when the `ref_model` argument "
             "of the `DPOTrainer` is provided as a string."
         },
     )
-    model_adapter_name: Optional[str] = field(
+    model_adapter_name: str | None = field(
         default=None,
         metadata={"help": "Name of the train target PEFT adapter, when using LoRA with multiple adapters."},
     )
-    ref_adapter_name: Optional[str] = field(
+    ref_adapter_name: str | None = field(
         default=None,
         metadata={"help": "Name of the reference PEFT adapter, when using LoRA with multiple adapters."},
     )
@@ -246,27 +297,30 @@ class DPOConfig(TrainingArguments):
     )
 
     # Parameters that control the data preprocessing
-    dataset_num_proc: Optional[int] = field(
+    dataset_num_proc: int | None = field(
         default=None,
         metadata={"help": "Number of processes to use for processing the dataset."},
     )
-    padding_value: Optional[int] = field(
+    pad_token: str | None = field(
         default=None,
-        metadata={"help": "Padding value to use. If `None`, the padding value of the tokenizer is used."},
+        metadata={
+            "help": "Token used for padding. If `None`, it defaults to `processing_class.pad_token`, or if that "
+            "is also `None`, it falls back to `processing_class.eos_token`."
+        },
     )
     label_pad_token_id: int = field(
         default=-100,
         metadata={"help": "Padding value to use for labels."},
     )
-    max_prompt_length: Optional[int] = field(
+    max_prompt_length: int | None = field(
         default=512,
         metadata={"help": "Maximum length of the prompt."},
     )
-    max_completion_length: Optional[int] = field(
+    max_completion_length: int | None = field(
         default=None,
         metadata={"help": "Maximum length of the completion."},
     )
-    max_length: Optional[int] = field(
+    max_length: int | None = field(
         default=1024,
         metadata={"help": "Maximum length of the full sequence (prompt + completion)."},
     )
@@ -296,7 +350,7 @@ class DPOConfig(TrainingArguments):
             "probabilities on-the-fly."
         },
     )
-    precompute_ref_batch_size: Optional[int] = field(
+    precompute_ref_batch_size: int | None = field(
         default=None,
         metadata={
             "help": "Batch size to use when precomputing reference model log probabilities. This can be set higher "
@@ -304,7 +358,7 @@ class DPOConfig(TrainingArguments):
             "`per_device_train_batch_size` for training and `per_device_eval_batch_size` for evaluation."
         },
     )
-    tools: Optional[list[Union[dict, Callable]]] = field(
+    tools: list[dict] | None = field(
         default=None,
         metadata={
             "help": "List of tools (callable functions) that will be accessible to the model. If the template does "
@@ -313,37 +367,22 @@ class DPOConfig(TrainingArguments):
     )
 
     # Parameters that control the training
-    loss_type: str = field(
-        default="sigmoid",
+    loss_type: list[str] = field(
+        default_factory=lambda: ["sigmoid"],
         metadata={
-            "help": "Type of loss to use.",
-            "choices": [
-                "sigmoid",
-                "hinge",
-                "ipo",
-                "exo_pair",
-                "nca_pair",
-                "robust",
-                "bco_pair",
-                "sppo_hard",
-                "aot",
-                "aot_pair",
-                "discopop",
-                "apo_zero",
-                "apo_down",
-            ],
+            "help": "Type of loss to use. Possible values are: `'sigmoid'`, `'hinge'`, `'ipo'`, `'exo_pair'`, "
+            "`'nca_pair'`, `'robust'`, `'bco_pair'`, `'sppo_hard'`, `'aot'`, `'aot_pair'`, `'discopop'`, "
+            "`'apo_zero'`, `'apo_down'` and `'sft'`. Multiple loss types can be combined using comma separation "
+            "(e.g., `['sigmoid', 'bco_pair', 'sft']` for MPO). The `loss_weights` parameter can be used to specify "
+            "corresponding weights for each loss type."
         },
-    )
-    use_liger_loss: bool = field(
-        default=False,
-        metadata={"help": "Whether to use Liger loss."},
     )
     base_model_attribute_name: str = field(
         default="model",
         metadata={
             "help": "Name of the attribute in the model that contains the base model. This is used to get the base "
             "model  from the model when the model does not have a `get_decoder` method in the case when "
-            "`use_liger_loss` is `True`."
+            "`use_liger_kernel` is `True`."
         },
     )
     beta: float = field(
@@ -353,7 +392,7 @@ class DPOConfig(TrainingArguments):
             "Higher β means less deviation from the reference model."
         },
     )
-    f_divergence_type: FDivergenceType = field(
+    f_divergence_type: FDivergenceType | str = field(
         default=FDivergenceType.REVERSE_KL,
         metadata={
             "help": "Type of f-divergence regularization function to compute divergence between policy and reference "
@@ -382,7 +421,7 @@ class DPOConfig(TrainingArguments):
         default=False,
         metadata={"help": "Whether to weight the loss as done in the WPO paper."},
     )
-    rpo_alpha: Optional[float] = field(
+    rpo_alpha: float | None = field(
         default=None,
         metadata={
             "help": "α parameter from the RPO paper (v3), which controls the weighting of the NLL term in the loss. "
@@ -390,7 +429,7 @@ class DPOConfig(TrainingArguments):
             "`rpo_alpha=1.0`."
         },
     )
-    ld_alpha: Optional[float] = field(
+    ld_alpha: float | None = field(
         default=None,
         metadata={
             "help": "α parameter from the LD-DPO paper, which controls the weighting of the verbose token "
@@ -403,6 +442,14 @@ class DPOConfig(TrainingArguments):
         metadata={
             "help": "τ/temperature parameter from the DiscoPOP paper, which controls the shape of log ratio modulated "
             "loss. The paper recommends the default value `discopop_tau=0.05`."
+        },
+    )
+    loss_weights: list[float] | None = field(
+        default=None,
+        metadata={
+            "help": "List of loss weights for multi-loss combinations. Used when combining multiple loss types. "
+            "Example: `[0.8, 0.2, 1.0]` for MPO. If not provided, defaults to equal weights (`1.0`) for all loss "
+            "types."
         },
     )
     sync_ref_model: bool = field(
@@ -432,12 +479,35 @@ class DPOConfig(TrainingArguments):
     generate_during_eval: bool = field(
         default=False,
         metadata={
-            "help": "Whether to generate and log completions from both the model and the reference model to W&B or "
-            "Comet during evaluation."
+            "help": "Whether to generate and log completions from both the model and the reference model to W&B, MLFLow "
+            "or Comet during evaluation."
         },
     )
 
     def __post_init__(self):
         self.bf16 = not (self.fp16) if self.bf16 is None else self.bf16
+
+        # Transformers explicitly set use_reentrant=True in the past to silence a PyTorch warning, but the default was
+        # never updated once PyTorch switched to recommending use_reentrant=False. Until that change lands upstream
+        # (see https://github.com/huggingface/transformers/pull/43203) and is released (most likely in 5.0.0), we
+        # default to the recommended non-reentrant behavior here, while preserving any user-provided value.
+        if self.gradient_checkpointing and Version(transformers.__version__) < Version("5.0.0"):
+            self.gradient_checkpointing_kwargs = self.gradient_checkpointing_kwargs or {}
+            self.gradient_checkpointing_kwargs.setdefault("use_reentrant", False)
+
+        self.f_divergence_type = FDivergenceType(self.f_divergence_type)
+
+        # Normalize loss_type to string format for internal use
+        if hasattr(self.loss_type, "__len__") and len(self.loss_type) == 1:
+            self.loss_type = self.loss_type[0]
+
+        # Validate loss_type
+        if self.loss_weights is not None:
+            loss_types = self.loss_type if isinstance(self.loss_type, list) else [self.loss_type]
+            if len(self.loss_weights) != len(loss_types):
+                raise ValueError(
+                    f"Length of loss_weights list ({self.loss_weights}) must match number of loss types "
+                    f"({loss_types})."
+                )
 
         super().__post_init__()

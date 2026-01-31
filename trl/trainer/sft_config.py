@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2020-2026 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
+import transformers
+from packaging.version import Version
 from transformers import TrainingArguments
 
 
@@ -35,10 +36,12 @@ class SFTConfig(TrainingArguments):
     Parameters:
         > Parameters that control the model
 
-        model_init_kwargs (`dict[str, Any]` or `None`, *optional*, defaults to `None`):
+        model_init_kwargs (`dict[str, Any]`, *optional*):
             Keyword arguments for [`~transformers.AutoModelForCausalLM.from_pretrained`], used when the `model`
-            argument of the [`SFTTrainer`] is provided as a string.
-        chat_template_path (`str` or `None`, *optional*, defaults to `None`):
+            argument of the [`SFTTrainer`] is provided as a string. If you're training a MoE architecture and want to
+            include the load balancing/auxiliary loss as a part of the final loss, remember to set
+            `output_router_logits=True` in this dictionary.
+        chat_template_path (`str`, *optional*):
             If specified, sets the model's chat template. This can either be the path to a tokenizer (local directory
             or Hugging Face Hub model) or a direct path to a Jinja template file. When using a Jinja file, you must
             ensure that any special tokens referenced in the template are added to the tokenizer and that the model's
@@ -48,48 +51,54 @@ class SFTConfig(TrainingArguments):
 
         dataset_text_field (`str`, *optional*, defaults to `"text"`):
             Name of the column that contains text data in the dataset.
-        dataset_kwargs (`dict[str, Any]` or `None`, *optional*, defaults to `None`):
+        dataset_kwargs (`dict[str, Any]`, *optional*):
             Dictionary of optional keyword arguments for the dataset preparation. The only supported key is
-            `skip_prepare_dataset`.
-        dataset_num_proc (`int` or `None`, *optional*, defaults to `None`):
+            `skip_prepare_dataset`. When the model is a VLM, `skip_prepare_dataset` is automatically treated as `True`
+            regardless of the provided value, since preprocessing is done on the fly.
+        dataset_num_proc (`int`, *optional*):
             Number of processes to use for processing the dataset.
-        eos_token (`str` or `None`, *optional*, defaults to `None`):
+        eos_token (`str`, *optional*):
             Token used to indicate the end of a turn or sequence. If `None`, it defaults to
             `processing_class.eos_token`.
-        pad_token (`int` or `None`, *optional*, defaults to `None`):
+        pad_token (`str`, *optional*):
             Token used for padding. If `None`, it defaults to `processing_class.pad_token`, or if that is also `None`,
             it falls back to `processing_class.eos_token`.
         max_length (`int` or `None`, *optional*, defaults to `1024`):
             Maximum length of the tokenized sequence. Sequences longer than `max_length` are truncated from the right.
             If `None`, no truncation is applied. When packing is enabled, this value sets the sequence length.
+        shuffle_dataset (`bool`, *optional*, defaults to `False`):
+            Whether to shuffle the dataset.
         packing (`bool`, *optional*, defaults to `False`):
             Whether to group multiple sequences into fixed-length blocks to improve computational efficiency and reduce
             padding. Uses `max_length` to define sequence length.
-        packing_strategy (`str`, *optional*, defaults to `"ffd"`):
-            Strategy for packing sequences. Can be either `"ffd"` (first-fit decreasing, default), or `"wrapped"`.
+        packing_strategy (`str`, *optional*, defaults to `"bfd"`):
+            Strategy for packing sequences. Can be either `"bfd"` (best-fit decreasing, default), or `"wrapped"`.
         padding_free (`bool`, *optional*, defaults to `False`):
             Whether to perform forward passes without padding by flattening all sequences in the batch into a single
             continuous sequence. This reduces memory usage by eliminating padding overhead. Currently, this is only
-            supported with the `flash_attention_2` attention implementation, which can efficiently handle the flattened
-            batch structure. When packing is enabled with strategy `"ffd"`, padding-free is enabled, regardless of the
-            value of this parameter.
-        pad_to_multiple_of (`int` or `None`, *optional*, defaults to `None`):
+            supported with the FlashAttention 2 or 3, which can efficiently handle the flattened batch structure. When
+            packing is enabled with strategy `"bfd"`, padding-free is enabled, regardless of the value of this
+            parameter.
+        pad_to_multiple_of (`int`, *optional*):
             If set, the sequences will be padded to a multiple of this value.
-        eval_packing (`bool` or `None`, *optional*, defaults to `None`):
+        eval_packing (`bool`, *optional*):
             Whether to pack the eval dataset. If `None`, uses the same value as `packing`.
 
         > Parameters that control the training
 
-        completion_only_loss (`bool` or `None`, *optional*, defaults to `None`):
+        completion_only_loss (`bool`, *optional*):
             Whether to compute loss only on the completion part of the sequence. If set to `True`, loss is computed
             only on the completion, which is supported only for [prompt-completion](#prompt-completion) datasets. If
             `False`, loss is computed on the entire sequence. If `None` (default), the behavior depends on the dataset:
             loss is computed on the completion for [prompt-completion](#prompt-completion) datasets, and on the full
             sequence for [language modeling](#language-modeling) datasets.
         assistant_only_loss (`bool`, *optional*, defaults to `False`):
-            Whether to compute loss only on the assistant part of the sequence. If set to `True`, loss is computed
-            only on the assistant responses, which is supported only for [conversational](#conversational) datasets. If `False`,
-            loss is computed on the entire sequence.
+            Whether to compute loss only on the assistant part of the sequence. If set to `True`, loss is computed only
+            on the assistant responses, which is supported only for [conversational](#conversational) datasets. If
+            `False`, loss is computed on the entire sequence.
+        loss_type (`str`, *optional*, defaults to `"nll"`):
+            Type of loss to use. Possible values are `"nll"` (negative log-likelihood, default) and `"dft"` (Dynamic
+            Fine-Tuning, as described in [this paper](https://huggingface.co/papers/2508.05629)).
         activation_offloading (`bool`, *optional*, defaults to `False`):
             Whether to offload the activations to the CPU.
     """
@@ -108,7 +117,13 @@ class SFTConfig(TrainingArguments):
             "will be interpreted as ratio of total training steps."
         },
     )
-    bf16: Optional[bool] = field(
+    gradient_checkpointing: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, use gradient checkpointing to save memory at the expense of slower backward pass."
+        },
+    )
+    bf16: bool | None = field(
         default=None,
         metadata={
             "help": "Whether to use bf16 (mixed) precision instead of 32-bit. Requires Ampere or higher NVIDIA "
@@ -116,23 +131,28 @@ class SFTConfig(TrainingArguments):
             "`fp16` is not set."
         },
     )
-    average_tokens_across_devices: bool = field(
-        default=True,
+    # Transformers 4.57.0 introduced a bug that caused the dtype of `lr_scheduler_kwargs` to be unparsable. This issue
+    # was fixed in https://github.com/huggingface/transformers/pull/41322 and released in 4.57.5. We add a temporary
+    # workaround here, which can be removed once we drop support for versions older than 4.57.5.
+    lr_scheduler_kwargs: dict | str | None = field(
+        default=None,
         metadata={
-            "help": "Whether or not to average tokens across devices. If enabled, will use all_reduce to synchronize "
-            "num_tokens_in_batch for precise loss calculation. Reference: https://github.com/huggingface/transformers/issues/34242 "
+            "help": "Additional parameters for the lr_scheduler, such as {'num_cycles': 1} for cosine with hard "
+            "restarts."
         },
     )
 
     # Parameters that control the model
-    model_init_kwargs: Optional[dict[str, Any]] = field(
+    model_init_kwargs: dict[str, Any] | None = field(
         default=None,
         metadata={
             "help": "Keyword arguments for `AutoModelForCausalLM.from_pretrained`, used when the `model` argument of "
-            "the `SFTTrainer` is provided as a string."
+            "the `SFTTrainer` is provided as a string. If you're training a MoE architecture and want to include the "
+            "load balancing/auxiliary loss as a part of the final loss, remember to set `output_router_logits=True` "
+            "in this dictionary."
         },
     )
-    chat_template_path: Optional[str] = field(
+    chat_template_path: str | None = field(
         default=None,
         metadata={
             "help": "If specified, sets the model's chat template. This can either be the path to a tokenizer (local "
@@ -147,37 +167,43 @@ class SFTConfig(TrainingArguments):
         default="text",
         metadata={"help": "Name of the column that contains text data in the dataset."},
     )
-    dataset_kwargs: Optional[dict[str, Any]] = field(
+    dataset_kwargs: dict[str, Any] | None = field(
         default=None,
         metadata={
             "help": "Dictionary of optional keyword arguments for the dataset preparation. The only supported key is "
-            "`skip_prepare_dataset`."
+            "`skip_prepare_dataset`. If the model is a VLM, `skip_prepare_dataset` value is ignored. When the model "
+            "is a VLM, `skip_prepare_dataset` is automatically treated as `True` regardless of the provided value, "
+            "since preprocessing is done on the fly."
         },
     )
-    dataset_num_proc: Optional[int] = field(
+    dataset_num_proc: int | None = field(
         default=None,
         metadata={"help": "Number of processes to use for processing the dataset."},
     )
-    eos_token: Optional[str] = field(
+    eos_token: str | None = field(
         default=None,
         metadata={
             "help": "Token used to indicate the end of a turn or sequence. If `None`, it defaults to `processing_class.eos_token`."
         },
     )
-    pad_token: Optional[str] = field(
+    pad_token: str | None = field(
         default=None,
         metadata={
             "help": "Token used for padding. If `None`, it defaults to `processing_class.pad_token`, or if that "
             "is also `None`, it falls back to `processing_class.eos_token`."
         },
     )
-    max_length: Optional[int] = field(
+    max_length: int | None = field(
         default=1024,
         metadata={
-            "help": "Maximum length of the tokenized sequence. Sequences longer than `max_length` are truncated from"
+            "help": "Maximum length of the tokenized sequence. Sequences longer than `max_length` are truncated from "
             "the right. If `None`, no truncation is applied. When packing is enabled, this value sets the "
             "sequence length."
         },
+    )
+    shuffle_dataset: bool = field(
+        default=False,
+        metadata={"help": "Whether to shuffle the dataset."},
     )
     packing: bool = field(
         default=False,
@@ -187,9 +213,9 @@ class SFTConfig(TrainingArguments):
         },
     )
     packing_strategy: str = field(
-        default="ffd",
+        default="bfd",
         metadata={
-            "help": "Strategy for packing sequences. Can be either `'ffd'` (first-fit decreasing, default), or "
+            "help": "Strategy for packing sequences. Can be either `'bfd'` (best-fit decreasing, default), or "
             "`'wrapped'`."
         },
     )
@@ -197,23 +223,23 @@ class SFTConfig(TrainingArguments):
         default=False,
         metadata={
             "help": "Whether to perform forward passes without padding by flattening all sequences in the batch into "
-            "a single continuous sequence. This reduces memory usage by eliminating padding overhead. Currently, "
-            "this is only supported with the `flash_attention_2` attention implementation, which can efficiently "
-            "handle the flattened batch structure. When packing is enabled with strategy `'ffd'`, padding-free is "
-            "enabled, regardless of the value of this parameter."
+            "a single continuous sequence. This reduces memory usage by eliminating padding overhead. Currently, this "
+            "is only supported with the FlashAttention 2 or 3, which can efficiently handle the flattened batch "
+            "structure. When packing is enabled with strategy `'bfd'`, padding-free is enabled, regardless of the "
+            "value of this parameter."
         },
     )
-    pad_to_multiple_of: Optional[int] = field(
+    pad_to_multiple_of: int | None = field(
         default=None,
         metadata={"help": "If set, the sequences will be padded to a multiple of this value."},
     )
-    eval_packing: Optional[bool] = field(
+    eval_packing: bool | None = field(
         default=None,
         metadata={"help": "Whether to pack the eval dataset. If `None`, uses the same value as `packing`."},
     )
 
     # Parameters that control the training
-    completion_only_loss: Optional[bool] = field(
+    completion_only_loss: bool | None = field(
         default=None,
         metadata={
             "help": (
@@ -235,27 +261,29 @@ class SFTConfig(TrainingArguments):
             )
         },
     )
+    loss_type: str = field(
+        default="nll",
+        metadata={
+            "help": (
+                'Type of loss to use. Possible values are `"nll"` (negative log-likelihood, default) and `"dft"` '
+                "(Dynamic Fine-Tuning, as described in https://huggingface.co/papers/2508.05629)."
+            )
+        },
+    )
     activation_offloading: bool = field(
         default=False,
         metadata={"help": "Whether to offload the activations to the CPU."},
     )
 
-    # Deprecated parameters
-    max_seq_length: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "This parameter is deprecated and will be removed in version 0.20.0. Use `max_length` instead."
-        },
-    )
-
     def __post_init__(self):
         self.bf16 = not (self.fp16) if self.bf16 is None else self.bf16
 
-        super().__post_init__()
+        # Transformers explicitly set use_reentrant=True in the past to silence a PyTorch warning, but the default was
+        # never updated once PyTorch switched to recommending use_reentrant=False. Until that change lands upstream
+        # (see https://github.com/huggingface/transformers/pull/43203) and is released (most likely in 5.0.0), we
+        # default to the recommended non-reentrant behavior here, while preserving any user-provided value.
+        if self.gradient_checkpointing and Version(transformers.__version__) < Version("5.0.0"):
+            self.gradient_checkpointing_kwargs = self.gradient_checkpointing_kwargs or {}
+            self.gradient_checkpointing_kwargs.setdefault("use_reentrant", False)
 
-        if self.max_seq_length is not None:
-            warnings.warn(
-                "`max_seq_length` is deprecated and will be removed in version 0.20.0. Use `max_length` instead.",
-                DeprecationWarning,
-            )
-            self.max_length = self.max_seq_length
+        super().__post_init__()
