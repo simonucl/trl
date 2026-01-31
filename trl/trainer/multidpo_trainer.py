@@ -1360,30 +1360,6 @@ class MultiDPOTrainer(Trainer):
         lambda_weight = self.lambda_weight
         combined_losses = lambda_weight * dpo_losses + (1 - lambda_weight) * adpo_losses
         
-        # Debug loss components (every 5 steps to avoid spam)
-        if hasattr(self, 'state') and self.state.global_step % 5 == 0:
-            if hasattr(self, 'accelerator') and self.accelerator.is_main_process:
-                dpo_loss_mean = dpo_losses.mean().item()
-                adpo_loss_mean = adpo_losses.mean().item()
-                combined_loss_mean = combined_losses.mean().item()
-                
-                print(f"\n🧮 Loss Debug (Step {self.state.global_step}):")
-                print(f"  🔷 DPO Loss: {dpo_loss_mean:.6f}")
-                print(f"  🔶 ADPO Loss: {adpo_loss_mean:.6f}")
-                print(f"  ⚖️  Lambda weight: {lambda_weight:.3f}")
-                print(f"  🔸 Combined Loss: {combined_loss_mean:.6f}")
-                print(f"  📏 DPO contribution: {lambda_weight * dpo_loss_mean:.6f}")
-                print(f"  📐 ADPO contribution: {(1-lambda_weight) * adpo_loss_mean:.6f}")
-                
-                # Check if ADPO is getting suppressed
-                if adpo_loss_mean > dpo_loss_mean * 10:
-                    print("⚠️  ADPO loss much larger than DPO - possible scaling issue!")
-                elif adpo_loss_mean < dpo_loss_mean / 10:
-                    print("⚠️  ADPO loss much smaller than DPO - possible underweighting!")
-                
-                # Debug logp ranges
-                print(f"  📊 DPO logps: chosen={chosen_logps_dpo.mean().item():.2f}, rejected={rejected_logps_dpo.mean().item():.2f}")
-                print(f"  📊 ADPO logps: chosen={chosen_logps_adpo.mean().item():.2f}, rejected={rejected_logps_adpo.mean().item():.2f}")
         combined_chosen_rewards = lambda_weight * dpo_chosen_rewards + (1 - lambda_weight) * adpo_chosen_rewards
         combined_rejected_rewards = lambda_weight * dpo_rejected_rewards + (1 - lambda_weight) * adpo_rejected_rewards
         
@@ -2095,54 +2071,6 @@ class MultiDPOTrainer(Trainer):
         # Compute DPO and ADPO specific accuracies
         dpo_accuracies = (model_output["chosen_logps_dpo"] > model_output["rejected_logps_dpo"]).float()
         adpo_accuracies = (model_output["chosen_logps_adpo"] > model_output["rejected_logps_adpo"]).float()
-        
-        # Debug accuracy computation every 10 steps
-        if hasattr(self, 'state') and self.state.global_step % 10 == 0:
-            if hasattr(self, 'accelerator') and self.accelerator.is_main_process:
-                print(f"\n🎯 Accuracy Debug (Step {self.state.global_step}):")
-                print(f"  DPO: chosen_logps={model_output['chosen_logps_dpo'].mean().item():.2f}, rejected_logps={model_output['rejected_logps_dpo'].mean().item():.2f}")
-                print(f"  DPO accuracy: {dpo_accuracies.mean().item():.3f}")
-                print(f"  ADPO: chosen_logps={model_output['chosen_logps_adpo'].mean().item():.2f}, rejected_logps={model_output['rejected_logps_adpo'].mean().item():.2f}")
-                print(f"  ADPO accuracy: {adpo_accuracies.mean().item():.3f}")
-                
-                # Show first few examples to understand the pattern
-                if len(model_output['chosen_logps_adpo']) >= 3:
-                    for i in range(min(3, len(model_output['chosen_logps_adpo']))):
-                        chosen_adpo = model_output['chosen_logps_adpo'][i].item()
-                        rejected_adpo = model_output['rejected_logps_adpo'][i].item()
-                        correct = chosen_adpo > rejected_adpo
-                        print(f"  Example {i}: chosen={chosen_adpo:.2f}, rejected={rejected_adpo:.2f}, correct={correct}")
-                        
-                # 🔍 DEBUG: Check reference model vs trained model for loss/accuracy discrepancy
-                if hasattr(self, '_last_ref_logps_adpo'):
-                    print(f"\n🔬 LOSS/ACCURACY DISCREPANCY DEBUG:")
-                    
-                    # Compare model vs reference differences
-                    model_diffs = model_output['chosen_logps_adpo'] - model_output['rejected_logps_adpo']
-                    ref_diffs = self._last_ref_chosen_logps_adpo - self._last_ref_rejected_logps_adpo
-                    logits = model_diffs - ref_diffs
-                    
-                    print(f"  Model ADPO diff (chosen-rejected): mean={model_diffs.mean().item():.4f}, std={model_diffs.std().item():.4f}")
-                    print(f"  Reference ADPO diff (chosen-rejected): mean={ref_diffs.mean().item():.4f}, std={ref_diffs.std().item():.4f}")
-                    print(f"  Final logits (model_diff - ref_diff): mean={logits.mean().item():.4f}, std={logits.std().item():.4f}")
-                    print(f"  Beta parameter: {self.beta}")
-                    
-                    # Check if reference is already too good
-                    ref_accuracy = (ref_diffs > 0).float().mean().item()
-                    print(f"  Reference model ADPO accuracy: {ref_accuracy:.3f}")
-                    
-                    if ref_accuracy > 0.8:
-                        print(f"  ⚠️  ISSUE: Reference model already has high ADPO accuracy ({ref_accuracy:.3f})")
-                        print(f"     This makes it hard for trained model to show improvement in loss!")
-                        
-                    # Show loss computation for first example
-                    if len(logits) > 0:
-                        first_logit = logits[0].item()
-                        first_loss = -torch.nn.functional.logsigmoid(self.beta * logits[0]).item()
-                        print(f"  Example 0: logit={first_logit:.4f}, loss={first_loss:.4f}")
-                        print(f"             sigmoid({self.beta} * {first_logit:.4f}) = {torch.sigmoid(self.beta * logits[0]).item():.4f}")
-                        
-                    print(f"  Expected loss range: [0, {-torch.nn.functional.logsigmoid(torch.tensor(-10.0)).item():.3f}]")
 
         if self.args.rpo_alpha is not None:
             losses = losses + self.args.rpo_alpha * model_output["nll_loss"]  # RPO loss from V3 of the paper
@@ -2404,73 +2332,12 @@ class MultiDPOTrainer(Trainer):
             self._verify_checkpoint_saved(checkpoint_dir, model)
 
     def _debug_model_state(self, model, prefix=""):
-        """Debug helper to print model parameter statistics."""
-        if self.accelerator.is_main_process:
-            param_count = sum(p.numel() for p in model.parameters())
-            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            
-            # Calculate parameter norms
-            total_norm = 0.0
-            grad_norm = 0.0
-            param_stats = []
-            
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    param_norm = param.data.norm().item()
-                    total_norm += param_norm ** 2
-                    
-                    if param.grad is not None:
-                        grad_norm += param.grad.data.norm().item() ** 2
-                    
-                    param_stats.append((name, param_norm, param.grad is not None))
-            
-            total_norm = total_norm ** 0.5
-            grad_norm = grad_norm ** 0.5
-            
-            print(f"\n=== Model State Debug ({prefix}) ===")
-            print(f"Total parameters: {param_count:,}")
-            print(f"Trainable parameters: {trainable_count:,}")
-            print(f"Parameter norm: {total_norm:.6f}")
-            print(f"Gradient norm: {grad_norm:.6f}")
-            print(f"Lambda weight: {getattr(self, 'lambda_weight', 'NOT_SET')}")
-            print(f"Model mode: {'training' if model.training else 'eval'}")
-            
-            # Show first few parameter stats
-            print("First 3 trainable parameters:")
-            for name, norm, has_grad in param_stats[:3]:
-                print(f"  {name}: norm={norm:.6f}, has_grad={has_grad}")
-            print("=" * 50)
+        """Debug helper for model parameter statistics (no-op in production)."""
+        pass
 
     def _verify_checkpoint_saved(self, checkpoint_dir, model):
-        """Verify that checkpoint was actually saved and contains updated parameters."""
-        if not os.path.exists(checkpoint_dir):
-            print(f"WARNING: Checkpoint directory {checkpoint_dir} does not exist!")
-            return
-            
-        # Check if model files exist
-        model_files = ["pytorch_model.bin", "model.safetensors", "adapter_model.bin"]
-        found_model_file = None
-        
-        for model_file in model_files:
-            model_path = os.path.join(checkpoint_dir, model_file)
-            if os.path.exists(model_path):
-                found_model_file = model_path
-                break
-        
-        if found_model_file is None:
-            print(f"WARNING: No model file found in {checkpoint_dir}")
-            return
-            
-        print(f"✓ Checkpoint saved at {checkpoint_dir}")
-        print(f"✓ Model file: {os.path.basename(found_model_file)}")
-        
-        # Additional verification for DeepSpeed
-        if self.is_deepspeed_enabled:
-            ds_config_path = os.path.join(checkpoint_dir, "zero_to_fp32.py")
-            if os.path.exists(ds_config_path):
-                print("✓ DeepSpeed checkpoint files detected")
-            else:
-                print("WARNING: DeepSpeed checkpoint files may be missing")
+        """Verify that checkpoint was actually saved (no-op in production)."""
+        pass
 
     def save_model_state_dict(self, output_dir: str = None):
         """Explicit model state dict saving as backup."""
@@ -2494,91 +2361,8 @@ class MultiDPOTrainer(Trainer):
                 'lambda_weight': self.lambda_weight,
                 'global_step': self.state.global_step if hasattr(self, 'state') else 0,
             }, model_path)
-            print(f"✓ Explicit model state dict saved to {model_path}")
-        
-        return model_path
 
-    def training_step(self, model, inputs, num_items_in_batch=None):
-        """Override training step to monitor parameter updates."""
-        # Store parameter norms before training step
-        if hasattr(self, '_param_norms_before'):
-            param_norms_before = self._param_norms_before
-        else:
-            param_norms_before = {}
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    param_norms_before[name] = param.data.norm().item()
-        
-        # Perform the actual training step
-        loss = super().training_step(model, inputs)
-        
-        # Check parameter updates and gradients after training step
-        if self.state.global_step % self.args.logging_steps == 0:
-            param_updates = []
-            grad_info = []
-            
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    # Parameter update info
-                    if name in param_norms_before:
-                        norm_before = param_norms_before[name]
-                        norm_after = param.data.norm().item()
-                        update_magnitude = abs(norm_after - norm_before)
-                        param_updates.append((name, norm_before, norm_after, update_magnitude))
-                    
-                    # Gradient info
-                    if param.grad is not None:
-                        grad_norm = param.grad.data.norm().item()
-                        grad_info.append((name, grad_norm))
-                    else:
-                        grad_info.append((name, 0.0))
-            
-            # Log comprehensive debugging info
-            if self.accelerator.is_main_process:
-                # Calculate meaningful parameter update metrics
-                avg_update = sum(update[3] for update in param_updates) / len(param_updates) if param_updates else 0
-                total_grad_norm = sum(grad[1] for grad in grad_info)
-                max_update = max(param_updates, key=lambda x: x[3]) if param_updates else None
-                max_grad = max(grad_info, key=lambda x: x[1]) if grad_info else None
-                
-                # Calculate parameter update norm (RMS of all updates)
-                param_update_norm = (sum(update[3]**2 for update in param_updates) / len(param_updates))**0.5 if param_updates else 0
-                
-                print(f"\n🔍 Step {self.state.global_step} Debug Info:")
-                print(f"  📊 Loss: {loss.item():.6f}")
-                print(f"  📈 Avg parameter change: {avg_update:.8f}")
-                print(f"  📐 Parameter update norm (RMS): {param_update_norm:.8f}")
-                print(f"  📉 Total gradient norm: {total_grad_norm:.8f}")
-                if max_update:
-                    print(f"  🎯 Max param change: {max_update[0][:50]}... = {max_update[3]:.8f}")
-                if max_grad:
-                    print(f"  ⚡ Max gradient: {max_grad[0][:50]}... = {max_grad[1]:.8f}")
-                
-                # Enhanced warnings
-                if avg_update < 1e-8:
-                    print("⚠️  WARNING: Very small parameter updates detected!")
-                    if total_grad_norm < 1e-8:
-                        print("⚠️  CRITICAL: No gradients detected! Model not learning!")
-                    else:
-                        print("⚠️  ISSUE: Gradients present but parameters not updating!")
-                
-                # Check learning rate
-                current_lr = self.optimizer.param_groups[0]['lr'] if self.optimizer else 'Unknown'
-                print(f"  🎓 Current learning rate: {current_lr}")
-                
-                # Check DeepSpeed stage
-                if hasattr(self, 'accelerator') and hasattr(self.accelerator.state, 'deepspeed_plugin'):
-                    if self.accelerator.state.deepspeed_plugin:
-                        zero_stage = getattr(self.accelerator.state.deepspeed_plugin, 'zero_stage', 'Unknown')
-                        print(f"  🚀 DeepSpeed ZeRO Stage: {zero_stage}")
-        
-        # Store current norms for next step
-        self._param_norms_before = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self._param_norms_before[name] = param.data.norm().item()
-        
-        return loss
+        return model_path
 
     def create_model_card(
         self,

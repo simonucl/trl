@@ -495,9 +495,6 @@ class MultiDPOPConfig(TrainingArguments):
     )
 
     def __post_init__(self):
-        # Debug: Check beta value before any processing
-        print(f"DEBUG MultiDPOPConfig.__post_init__: beta={getattr(self, 'beta', 'NOT SET')}")
-        
         self.bf16 = not (self.fp16) if self.bf16 is None else self.bf16
 
         # MultiDPOP-specific validation
@@ -557,13 +554,7 @@ class MultiDPOPConfig(TrainingArguments):
                 UserWarning
             )
 
-        # Debug: Check beta value before calling super
-        print(f"DEBUG MultiDPOPConfig.__post_init__ before super: beta={getattr(self, 'beta', 'NOT SET')}")
-        
         super().__post_init__()
-        
-        # Debug: Check beta value after calling super
-        print(f"DEBUG MultiDPOPConfig.__post_init__ after super: beta={getattr(self, 'beta', 'NOT SET')}")
 
 
 # Backward compatibility alias

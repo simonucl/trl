@@ -96,59 +96,6 @@ if is_mlflow_available():
 
 logger = logging.get_logger(__name__)
 
-# def get_patch_size_from_processor(processor):
-#     """Get patch size from processor configuration"""
-#     # Try different ways to get patch_size from processor
-#     if hasattr(processor, 'patch_size'):
-#         return processor.patch_size
-#     elif hasattr(processor, 'image_processor') and hasattr(processor.image_processor, 'patch_size'):
-#         return processor.image_processor.patch_size
-#     elif hasattr(processor, 'feature_extractor') and hasattr(processor.feature_extractor, 'patch_size'):
-#         return processor.feature_extractor.patch_size
-#     elif hasattr(processor, 'image_processor') and hasattr(processor.image_processor, 'size'):
-#         # Some processors store patch info in size config
-#         size_config = processor.image_processor.size
-#         if isinstance(size_config, dict) and 'patch_size' in size_config:
-#             return size_config['patch_size']
-#     else:
-#         # Fallback for Qwen2.5-VL and similar models
-#         print("DEBUG: Could not find patch_size in processor, using default 14")
-#         return 14
-
-# def get_max_grid_size_from_processor(processor):
-#     """Get maximum supported grid dimensions from processor/model configuration"""
-#     # Try to find maximum grid dimensions from processor config
-#     max_h, max_w = None, None
-
-#     if hasattr(processor, 'image_processor'):
-#         img_proc = processor.image_processor
-
-#         # Check for explicit max dimensions
-#         for attr in ['max_height', 'max_width', 'max_size', 'size']:
-#             if hasattr(img_proc, attr):
-#                 value = getattr(img_proc, attr)
-#                 if isinstance(value, dict):
-#                     max_h = value.get('height') or value.get('max_height') or max_h
-#                     max_w = value.get('width') or value.get('max_width') or max_w
-#                 elif isinstance(value, (int, tuple, list)):
-#                     if isinstance(value, int):
-#                         max_h = max_w = value
-#                     else:
-#                         max_h, max_w = (value[0], value[1]) if len(value) >= 2 else (value[0], value[0])
-
-#         # Convert pixel dimensions to grid dimensions (divide by patch size)
-#         patch_size = get_patch_size_from_processor(processor)
-#         if max_h and max_w:
-#             max_grid_h = max_h // patch_size
-#             max_grid_w = max_w // patch_size
-#             print(f"DEBUG: Found max grid size from processor: {max_grid_h}x{max_grid_w} (pixel size {max_h}x{max_w}, patch_size {patch_size})")
-#             return max_grid_h, max_grid_w
-
-#     # Fallback to conservative defaults for Qwen2.5-VL
-#     # Based on common transformer limits, most models support up to 64x64 or 32x32 patches
-#     default_max = 64  # Conservative estimate
-#     print(f"DEBUG: Using default max grid size: {default_max}x{default_max}")
-#     return default_max, default_max
 
 def clamp_image_grid_thw(image_grid_thw, max_grid_h, max_grid_w):
     """Clamp image_grid_thw values to maximum supported dimensions"""
@@ -162,9 +109,6 @@ def clamp_image_grid_thw(image_grid_thw, max_grid_h, max_grid_w):
     clamped[..., 1] = torch.clamp(clamped[..., 1], max=max_grid_h)
     clamped[..., 2] = torch.clamp(clamped[..., 2], max=max_grid_w)
 
-    # Check if any values were clamped
-    if not torch.equal(original, clamped):
-        print(f"DEBUG: Clamped image_grid_thw from {original.tolist()} to {clamped.tolist()}")
 
     return clamped
 
@@ -193,7 +137,6 @@ def calculate_image_grid_thw(pixel_values, patch_size=14):
         return torch.tensor([grid_t, grid_h, grid_w], dtype=torch.long)
     else:
         # Fallback for unexpected shapes
-        print(f"DEBUG: Unexpected pixel_values shape: {pixel_values.shape}, using default grid [1, 16, 16]")
         return torch.tensor([1, 16, 16], dtype=torch.long)
 
 def shift_tokens_right(input_ids: torch.Tensor, decoder_start_token_id: int) -> torch.Tensor:
@@ -246,29 +189,16 @@ class DataCollatorForPreference(DataCollatorMixin):
     return_tensors: str = "pt"
 
     def torch_call(self, examples: list[Union[list[int], Any, dict[str, Any]]]) -> dict[str, Any]:
-        # print(f"DEBUG: torch_call called with {len(examples)} examples")
-        # print(f"DEBUG: First example keys: {list(examples[0].keys()) if examples else 'No examples'}")
-        
         # Convert to tensor
-        # prompt_input_ids = [torch.tensor(example["prompt_input_ids"]) for example in examples]
-        # prompt_attention_mask = [torch.ones_like(input_ids) for input_ids in prompt_input_ids]
         chosen_input_ids = [torch.tensor(example["chosen_input_ids"]) for example in examples]
         chosen_attention_mask = [torch.ones_like(input_ids) for input_ids in chosen_input_ids]
         rejected_input_ids = [torch.tensor(example["rejected_input_ids"]) for example in examples]
         rejected_attention_mask = [torch.ones_like(input_ids) for input_ids in rejected_input_ids]
-        # chosen_input_ids = [torch.tensor(example["chosen_input_ids"]) for example in examples]
-        # chosen_attention_mask = [torch.ones_like(input_ids) for input_ids in chosen_input_ids]
-        # rejected_input_ids = [torch.tensor(example["rejected_input_ids"]) for example in examples]
-        # rejected_attention_mask = [torch.ones_like(input_ids) for input_ids in rejected_input_ids]
         if "response_input_ids" in examples[0]:
-            # print(f"DEBUG: response_input_ids found in examples[0]")
             response_input_ids = [torch.tensor(example["response_input_ids"]) for example in examples]
             response_attention_mask = [torch.ones_like(input_ids) for input_ids in response_input_ids]
-            # print(f"DEBUG: Created {len(response_input_ids)} response_input_ids tensors")
         else:
-            print(f"DEBUG: WARNING - response_input_ids NOT found in examples[0]!")
             # Fallback: use empty list if response_input_ids not available
-            # This will be handled later in the training logic
             response_input_ids = []
             response_attention_mask = []
         if "chosen_pixel_values" in examples[0] and "rejected_pixel_values" in examples[0]:
@@ -476,18 +406,6 @@ class ADPOTrainer(Trainer):
         model_type = model.config.model_type
         available_types = list(MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.keys())
         is_vision = model_type in available_types
-
-        debug_vision_msg = f"*** VISION MODEL DETECTION: model_type='{model_type}', available_types={available_types}, is_vision_model={is_vision}"
-        print(debug_vision_msg, flush=True)
-        sys.stderr.write(f"{debug_vision_msg}\n")
-        sys.stderr.flush()
-
-        try:
-            with open("/tmp/adpo_debug.log", "a") as f:
-                f.write(f"{debug_vision_msg}\n")
-                f.flush()
-        except:
-            pass
 
         self.is_vision_model = is_vision
         self.is_peft_model = is_peft_available() and isinstance(model, PeftModel)
@@ -804,43 +722,6 @@ class ADPOTrainer(Trainer):
             if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
                 map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"
 
-            print(f"DEBUG: is_vision_model = {self.is_vision_model}")
-
-            # Enhanced debug output for method selection
-            import sys
-            method_name = 'process_row' if self.is_vision_model else 'tokenize_row'
-            selected_method = self.process_row if self.is_vision_model else self.tokenize_row
-
-            method_debug_msg = f"*** METHOD SELECTION: is_vision_model={self.is_vision_model}, using_method={method_name}, method_object={selected_method}"
-            print(method_debug_msg, flush=True)
-            sys.stderr.write(f"{method_debug_msg}\n")
-            sys.stderr.flush()
-
-            try:
-                with open("/tmp/adpo_debug.log", "a") as f:
-                    f.write(f"{method_debug_msg}\n")
-                    f.flush()
-            except:
-                pass
-
-            print("*** BEFORE dataset.map call", flush=True)
-            print(f"*** Dataset info: type={type(dataset)}, len={len(dataset) if hasattr(dataset, '__len__') else 'unknown'}", flush=True)
-            print(f"*** Map kwargs: {map_kwargs}", flush=True)
-            print(f"*** Processing class: {type(processing_class)}", flush=True)
-
-            # Try to inspect first few examples before processing
-            try:
-                print("*** Checking first example structure...", flush=True)
-                first_example = dataset[0] if len(dataset) > 0 else {}
-                print(f"*** First example keys: {list(first_example.keys())}", flush=True)
-                print(f"*** First example 'chosen' type: {type(first_example.get('chosen', 'missing'))}", flush=True)
-                print(f"*** First example 'chosen_images' type: {type(first_example.get('chosen_images', 'missing'))}", flush=True)
-                if 'chosen_images' in first_example:
-                    print(f"*** First example 'chosen_images' length: {len(first_example['chosen_images'])}", flush=True)
-            except Exception as e:
-                print(f"*** Error inspecting first example: {e}", flush=True)
-
-            print("*** Starting dataset.map call...", flush=True)
             dataset = dataset.map(
                 self.tokenize_row if not self.is_vision_model else self.process_row,
                 remove_columns=["chosen", "rejected"],
@@ -853,15 +734,6 @@ class ADPOTrainer(Trainer):
                 },
                 **map_kwargs,
             )
-            print("*** COMPLETED dataset.map call", flush=True)
-            
-            print(f"DEBUG: After dataset.map, dataset has {len(dataset)} examples")
-            if len(dataset) > 0:
-                first_example = dataset[0]
-                print(f"DEBUG: First example keys: {list(first_example.keys())}")
-                print(f"DEBUG: Has response_input_ids: {'response_input_ids' in first_example}")
-                if 'response_input_ids' in first_example:
-                    print(f"DEBUG: response_input_ids length: {len(first_example['response_input_ids'])}")
 
         return dataset
 
@@ -975,34 +847,15 @@ class ADPOTrainer(Trainer):
         add_special_tokens: bool = True,
     ) -> dict[str, list[int]]:
         """
-        NEW VERSION - Same as `tokenize_row` but for vision models with COMBINED processing.
-        FIXES: Processes chosen+rejected together to ensure token/feature alignment.
+        Same as `tokenize_row` but for vision models with COMBINED processing.
+        Processes chosen+rejected together to ensure token/feature alignment.
         """
-        import sys
-        import os
-
-        print("DEBUG: process_row - ENTRY POINT")
-        print(f"DEBUG: features keys: {list(features.keys())}")
-        print(f"DEBUG: processing_class type: {type(processing_class)}")
-
-        try:
-            chosen_images_len = len(features['chosen_images'])
-            rejected_images_len = len(features['rejected_images'])
-            print(f"DEBUG: Image lengths - chosen: {chosen_images_len}, rejected: {rejected_images_len}")
-        except Exception as e:
-            print(f"DEBUG: Error getting image lengths: {e}")
+        if 'chosen_images' not in features or 'rejected_images' not in features:
             return {}
 
-        print(f"DEBUG: ADPO process_row - Processing {len(features['chosen_images'])} chosen + {len(features['rejected_images'])} rejected images")
-
         processor, tokenizer = processing_class, processing_class.tokenizer
-        print("DEBUG: Got processor and tokenizer successfully")
 
         # Process chosen and rejected individually using official approach
-        print("DEBUG: Starting chosen processing...")
-        print(f"DEBUG: chosen text length: {len(features['chosen'])}")
-        print(f"DEBUG: chosen images type: {type(features['chosen_images'])}")
-
         chosen_processed = processor(
             text=[features["chosen"]],
             images=features["chosen_images"],
@@ -1010,11 +863,6 @@ class ADPOTrainer(Trainer):
             return_tensors='pt',
             add_special_tokens=False
         )
-        print("DEBUG: Chosen processing completed successfully")
-
-        print("DEBUG: Starting rejected processing...")
-        print(f"DEBUG: rejected text length: {len(features['rejected'])}")
-        print(f"DEBUG: rejected images type: {type(features['rejected_images'])}")
 
         rejected_processed = processor(
             text=[features["rejected"]],
@@ -1023,14 +871,6 @@ class ADPOTrainer(Trainer):
             return_tensors='pt',
             add_special_tokens=False
         )
-        print("DEBUG: Rejected processing completed successfully")
-
-        # Verify the fix: Check vision token counts
-        import re
-        original_chosen_pads = len(re.findall(r'<\|image_pad\|>', features['chosen']))
-        chosen_text_from_processor = tokenizer.decode(chosen_processed["input_ids"][0], skip_special_tokens=False)
-        processor_chosen_pads = len(re.findall(r'<\|image_pad\|>', chosen_text_from_processor))
-        print(f"DEBUG: Vision token fix - Original: {original_chosen_pads}, Processor: {processor_chosen_pads} ✓")
 
         # Extract results from processor (using proper vision tokens)
         chosen_input_ids = chosen_processed["input_ids"][0].tolist()
@@ -1052,14 +892,11 @@ class ADPOTrainer(Trainer):
         response_input_ids = response_input_ids + [tokenizer.eos_token_id]
 
         # Truncate sequences
-        print(f'Max prompt length: {max_prompt_length}, max completion length: {max_completion_length}.')
-        print(f'Length of chosen_input_ids: {len(chosen_input_ids)}, length of rejected_input_ids: {len(rejected_input_ids)}.')
         if max_prompt_length is not None:
             chosen_input_ids = chosen_input_ids[-max_prompt_length:]
             rejected_input_ids = rejected_input_ids[-max_prompt_length:]
         if max_completion_length is not None:
             response_input_ids = response_input_ids[:max_completion_length]
-        print(f'Length AFTER truncation: chosen_input_ids: {len(chosen_input_ids)}, rejected_input_ids: {len(rejected_input_ids)}')
 
         output = {
             "response_input_ids": response_input_ids,
@@ -1309,10 +1146,6 @@ class ADPOTrainer(Trainer):
             ),
         )
         if "chosen_pixel_values" in batch and "rejected_pixel_values" in batch:
-            print(f"DEBUG: concatenating pixel_values")
-            print(f"  chosen_pixel_values shape: {batch['chosen_pixel_values'].shape}")
-            print(f"  rejected_pixel_values shape: {batch['rejected_pixel_values'].shape}")
-
             # Handle 5D tensor case [batch, num_images, channels, height, width]
             chosen_pv = batch["chosen_pixel_values"]
             rejected_pv = batch["rejected_pixel_values"]
@@ -1324,9 +1157,6 @@ class ADPOTrainer(Trainer):
                 rejected_pv = rejected_pv.squeeze(1)  # [batch, 1, C, H, W] -> [batch, C, H, W]
 
             output["pixel_values"] = torch.cat([chosen_pv, rejected_pv], dim=0)
-            print(f"  final concatenated pixel_values shape: {output['pixel_values'].shape}")
-            print(f"  final concatenated pixel_values size: {output['pixel_values'].numel()}")
-            print(f"  final concatenated pixel_values dtype: {output['pixel_values'].dtype}")
 
         if "chosen_pixel_attention_mask" in batch and "rejected_pixel_attention_mask" in batch:
             output["pixel_attention_mask"] = torch.cat(
@@ -1337,8 +1167,6 @@ class ADPOTrainer(Trainer):
             output["image_sizes"] = torch.cat([batch["chosen_image_sizes"], batch["rejected_image_sizes"]], dim=0)
 
         if "chosen_image_grid_thw" in batch and "rejected_image_grid_thw" in batch:
-            print(f"DEBUG: concatenating image_grid_thw - chosen: {batch['chosen_image_grid_thw']}, rejected shape: {batch['rejected_image_grid_thw']}")
-
             # Handle case where data collator adds extra dimension
             chosen_grid = batch["chosen_image_grid_thw"]
             rejected_grid = batch["rejected_image_grid_thw"]
@@ -1350,8 +1178,6 @@ class ADPOTrainer(Trainer):
                 rejected_grid = rejected_grid.squeeze(1)
 
             output["image_grid_thw"] = torch.cat([chosen_grid, rejected_grid], dim=0)
-            print(f"DEBUG: final concatenated image_grid_thw shape: {output['image_grid_thw'].shape if output['image_grid_thw'] is not None else 'None'}")
-            print(f"DEBUG: final concatenated image_grid_thw values: {output['image_grid_thw']}")
 
         # Concatenate the chosen and rejected completions
         # max_completion_length = max(batch["chosen_input_ids"].shape[1], batch["rejected_input_ids"].shape[1])
@@ -1903,8 +1729,6 @@ class ADPOTrainer(Trainer):
                 dim=1,
             )
 
-            print(f'******************************CONCATENATED_FORWARD()******************************')
-            print(f'Length of input_ids before passing to model(input_ids, **model_kwargs): {input_ids.shape}.')
             # Flush and truncate
             if self.max_length is not None and self.max_length < attention_mask.size(1):
                 if self.truncation_mode == "keep_start":
@@ -1956,41 +1780,6 @@ class ADPOTrainer(Trainer):
                 model_kwargs["position_ids"] = position_ids
             else:
                 model_kwargs["attention_mask"] = attention_mask
-
-            # DEBUG: Check what's actually being passed to the model
-            print(f"DEBUG: About to call model with:")
-            print(f"  input_ids shape: {input_ids.shape}")
-            print(f"  model_kwargs keys: {list(model_kwargs.keys())}")
-            if "image_grid_thw" in model_kwargs:
-                print(f"  image_grid_thw in model_kwargs: {model_kwargs['image_grid_thw']}")
-                max_vals = torch.max(model_kwargs['image_grid_thw'], dim=0)[0]
-                print(f"  image_grid_thw max values: t={max_vals[0]}, h={max_vals[1]}, w={max_vals[2]}")
-            else:
-                print(f"  image_grid_thw NOT in model_kwargs")
-            
-            # CRITICAL DEBUG: Check pixel_values shape and content
-            if "pixel_values" in model_kwargs:
-                pixel_vals = model_kwargs['pixel_values']
-                print(f"  pixel_values shape: {pixel_vals.shape}")
-                print(f"  pixel_values size (total elements): {pixel_vals.numel()}")
-                print(f"  pixel_values dtype: {pixel_vals.dtype}")
-                print(f"  pixel_values min/max: [{pixel_vals.min():.3f}, {pixel_vals.max():.3f}]")
-                print(f"  pixel_values expected size check:")
-                if "image_grid_thw" in model_kwargs:
-                    grid_thw = model_kwargs['image_grid_thw']
-                    expected_patches = []
-                    for i in range(grid_thw.shape[0]):
-                        t, h, w = grid_thw[i].tolist()
-                        patches = t * h * w
-                        expected_patches.append(patches)
-                        print(f"    Image {i}: {t}×{h}×{w} = {patches} patches")
-                    total_expected_patches = sum(expected_patches)
-                    print(f"    Total expected patches: {total_expected_patches}")
-                    # Each patch is typically ~1176 values (3×14×14 = 588 per patch × 2 for some models)
-                    patch_dim = pixel_vals.numel() // sum(expected_patches) if sum(expected_patches) > 0 else 0
-                    print(f"    Calculated patch dimension: {patch_dim} values per patch")
-            else:
-                print(f"  pixel_values NOT in model_kwargs")
 
             outputs = model(input_ids, **model_kwargs)
             logits = outputs.logits
